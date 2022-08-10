@@ -1,0 +1,164 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Pod::Usage;
+use Term::Emit              qw/ :all /;
+use Spreadsheet::ParseExcel ();
+use Excel::Writer::XLSX     ();
+use Try::Tiny               ();
+
+our $VERSION = '0.0.1';
+
+my %opts = ();
+GetOptions( \%opts, 'verbose+', 'output=s', 'help|?', 'man' ) || pod2usage(1);
+&pod2usage( -exitval => 0 )                if ( $opts{'help'} );
+&pod2usage( -exitval => 0, -verbose => 2 ) if ( $opts{'man'} );
+
+Term::Emit::setopts(
+  -color        => 1,
+  -maxdepth     => $opts{'verbose'} || 0,
+  -bullets      => [ "* ", "- " ],
+  -showseverity => 7,
+);
+
+my $xls_file      = $ARGV[0];
+if ( !$xls_file ) {
+  print "[ERROR] Undefined xls file\n\n";
+  &pod2usage( -exitval => 1 );
+}
+elsif ( ! -f -r $xls_file ) {
+  die "xls file has invalid permissions\n";
+}
+
+my $xls_workbook  = _get_xls_workbook($xls_file);
+my $xlsx_workbook = _get_xlsx_workbook( $opts{'output'} || $xls_file );
+
+emit "Processing XLS worksheets";
+foreach my $xls_worksheet ( $xls_workbook->worksheets() ) {
+  emit "Processing worksheet '" . $xls_worksheet->get_name() . "'";
+  my $xlsx_worksheet = $xlsx_workbook->add_worksheet( $xls_worksheet->get_name() );
+  my ( $row_min, $row_max ) = $xls_worksheet->row_range();
+  my ( $col_min, $col_max ) = $xls_worksheet->col_range();
+
+  for my $row ( $row_min .. $row_max ) {
+    for my $col ( $col_min .. $col_max ) {
+      my $xls_cell = $xls_worksheet->get_cell( $row, $col );
+      next unless $xls_cell;
+      my $format = _convert_xls_format( $xls_cell->get_format(), $xlsx_workbook );
+      $xlsx_worksheet->write( $row, $col, $xls_cell->value(), $format );
+    }
+  }
+  emit_done;
+}
+emit_done;
+
+$xlsx_workbook->close();
+
+sub _get_xls_workbook {
+  my ($file) = @_;
+
+  emit "Parsing XLS file";
+
+  my $parser = Spreadsheet::ParseExcel->new();
+
+  my $workbook = try {
+    return $parser->parse($file);
+  }
+  catch {
+    return
+  };
+
+  unless ( ref($workbook) eq 'Spreadsheet::ParseExcel::Workbook' ) {
+    emit_fatal;
+    if ( length( $parser->error() ) > 0 ) {
+      die $parser->error() . ".\n";
+    }
+    else {
+      die "XLS parser died from unknown error\n";
+    }
+  }
+  emit_done;
+
+  return $workbook;
+}
+
+sub _get_xlsx_workbook {
+  my ($file) = @_;
+
+  emit "Creating XLSX file";
+  $file =~ s/\.xls$/\.xlsx/;
+  my $workbook = Excel::Writer::XLSX->new($file);
+  unless ( ref($workbook) eq 'Excel::Writer::XLSX' ) {
+    emit_fatal;
+    die "Failure creating XLSX workbook\n";
+  }
+  emit_done;
+
+  return $workbook;
+}
+
+sub _convert_xls_format {
+  my ( $xls_format, $xlsx_workbook ) = @_;
+
+  return unless ( ref($xls_format) eq 'Spreadsheet::ParseExcel::Format' );
+
+  my $format = $xlsx_workbook->add_format();
+  $format->set_format_properties(
+    font           => $xls_format->{'Font'}->{'Name'},
+    size           => $xls_format->{'Font'}->{'Height'},
+    color          => $xls_format->{'Font'}->{'Color'},
+    bold           => $xls_format->{'Font'}->{'Bold'}   || 0,
+    italic         => $xls_format->{'Font'}->{'Italic'} || 0,
+    underline      => $xls_format->{'Font'}->{'UnderlineStyle'},
+    font_strikeout => $xls_format->{'Font'}->{'Strikeout'} || 0,
+    font_script    => $xls_format->{'Font'}->{'Super'}     || 0,
+    align          => $xls_format->{'AlignH'}              || 0,
+    valign         => $xls_format->{'AlignV'}              || 0,
+    indent         => $xls_format->{'Indent'}              || 0,
+    text_wrap      => $xls_format->{'Wrap'}                || 0,
+    shrink         => $xls_format->{'Shrink'}              || 0,
+    rotation       => $xls_format->{'Rotate'}              || 0,
+    text_justlast  => $xls_format->{'JustLast'}            || 0,
+    left           => @{ $xls_format->{'BdrStyle'} }[0],
+    right          => @{ $xls_format->{'BdrStyle'} }[1],
+    top            => @{ $xls_format->{'BdrStyle'} }[2],
+    bottom         => @{ $xls_format->{'BdrStyle'} }[3],
+    left_color     => @{ $xls_format->{'BdrColor'} }[0],
+    right_color    => @{ $xls_format->{'BdrColor'} }[1],
+    top_color      => @{ $xls_format->{'BdrColor'} }[2],
+    bottom_color   => @{ $xls_format->{'BdrColor'} }[3],
+    pattern        => @{ $xls_format->{'Fill'} }[0],
+    fg_color       => @{ $xls_format->{'Fill'} }[1],
+    bg_color       => @{ $xls_format->{'Fill'} }[2],
+    locked         => $xls_format->{'Lock'}   || 0,
+    hidden         => $xls_format->{'Hidden'} || 0,
+  );
+
+  return $format;
+}
+
+__END__
+
+=head1 NAME
+
+xls2xlsx - Convert a .xls file to a .xlsx file
+
+=head1 SYNOPSIS
+
+xls2xlsx [-hmv] [-o file] file
+
+  Options:
+    -o   output file name
+
+    -h   usage help
+    -m   man file
+    -v   controls 'chattiness'
+
+=head1 DESCRIPTION
+
+B<xls2xlsx> will convert an old .xls file into the newer .xlsx formatted file.
+
+=cut
